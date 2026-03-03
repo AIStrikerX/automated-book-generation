@@ -1,0 +1,755 @@
+{
+  "name": "Automated Book Generation Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute",
+              "value": 2
+            }
+          ]
+        },
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "A:F",
+        "options": {}
+      },
+      "id": "google-sheets-trigger",
+      "name": "Google Sheets Trigger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [250, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.book_status }}",
+              "operation": "isEmpty"
+            },
+            {
+              "value1": "={{ $json.outline }}",
+              "operation": "isEmpty"
+            },
+            {
+              "value1": "={{ $json.title }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check-needs-outline",
+      "name": "Check: Needs Outline?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "apiKey",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.3-70b-versatile"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{ \"role\": \"system\", \"content\": \"You are an expert book outline creator.\" }, { \"role\": \"user\", \"content\": \"Create a comprehensive book outline for: \" + $json.title + \"\\n\\nNotes: \" + $json.notes_on_outline_before }] }}"
+            },
+            {
+              "name": "temperature",
+              "value": "0.7"
+            },
+            {
+              "name": "max_tokens",
+              "value": "8000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "generate-outline-groq",
+      "name": "Generate Outline (Groq)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [650, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "C{{ $json.row_number }}",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "dataProperty": "={{ $json.outline }}"
+      },
+      "id": "write-outline-to-sheet",
+      "name": "Write Outline to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [850, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "F{{ $json.row_number }}",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "dataProperty": "outline_ready_for_review"
+      },
+      "id": "update-status-outline-ready",
+      "name": "Update Status: Outline Ready",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1050, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "{{ $env.SMTP_USER }}",
+        "toEmail": "{{ $env.SMTP_USER }}",
+        "subject": "📝 Book Outline Ready: {{ $json.title }}",
+        "emailType": "html",
+        "message": "=<h2>Book Outline Ready for Review</h2><p><strong>Title:</strong> {{ $json.title }}</p><p>An AI-generated outline is ready for your review in the Google Sheet.</p><p><a href=\"https://docs.google.com/spreadsheets/d/{{ $env.GOOGLE_SHEET_ID }}\">Open Google Sheet</a></p><p>Instructions:</p><ul><li>Write \"no_notes_needed\" in column E to proceed with book generation</li><li>Write \"yes\" in column E and add feedback in column D to regenerate the outline</li></ul>"
+      },
+      "id": "send-email-outline-ready",
+      "name": "Send Email: Outline Ready",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1250, 200],
+      "credentials": {
+        "smtp": {
+          "id": "2",
+          "name": "Gmail SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status_outline_notes }}",
+              "operation": "equals",
+              "value2": "no_notes_needed"
+            },
+            {
+              "value1": "={{ $json.book_status }}",
+              "operation": "notEquals",
+              "value2": "complete"
+            }
+          ]
+        }
+      },
+      "id": "check-outline-approved",
+      "name": "Check: Outline Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "F{{ $json.row_number }}",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "dataProperty": "chapters_in_progress"
+      },
+      "id": "update-status-chapters-progress",
+      "name": "Update Status: Chapters in Progress",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [650, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse outline into chapter list\nconst outline = $input.item.json.outline;\nconst lines = outline.split('\\n');\nconst chapters = [];\n\nfor (const line of lines) {\n  const match = line.match(/\\*{0,2}Chapter\\s+(\\d+):\\s*(.+?)\\*{0,2}$/);\n  if (match) {\n    chapters.push({\n      chapter_number: parseInt(match[1]),\n      chapter_title: match[2].trim(),\n      book_title: $input.item.json.title,\n      row_number: $input.item.json.row_number\n    });\n  }\n}\n\nreturn chapters.map(chapter => ({ json: chapter }));"
+      },
+      "id": "parse-outline-chapters",
+      "name": "Parse Outline into Chapters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 500]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-through-chapters",
+      "name": "Loop Through Chapters",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1050, 500]
+    },
+    {
+      "parameters": {
+        "authentication": "apiKey",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.3-70b-versatile"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{ \"role\": \"system\", \"content\": \"You are an expert book writer. Write detailed, engaging chapters.\" }, { \"role\": \"user\", \"content\": \"Write Chapter \" + $json.chapter_number + \" for the book '\" + $json.book_title + \"'\\n\\nChapter Title: \" + $json.chapter_title + \"\\n\\nWrite a comprehensive chapter with clear structure, examples, and engaging content. Aim for 2000-3000 words.\" }] }}"
+            },
+            {
+              "name": "temperature",
+              "value": "0.7"
+            },
+            {
+              "name": "max_tokens",
+              "value": "8000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "generate-chapter-groq",
+      "name": "Generate Chapter (Groq)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 500],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 30000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Store chapter content\nconst chapterNumber = $input.item.json.chapter_number;\nconst chapterContent = $input.item.json.choices[0].message.content;\nconst bookTitle = $input.item.json.book_title;\n\n// Get stored chapters from workflow data or initialize\nconst workflowData = $workflow.staticData || {};\nconst bookId = bookTitle.replace(/\\s+/g, '_');\n\nif (!workflowData[bookId]) {\n  workflowData[bookId] = { chapters: [] };\n}\n\nworkflowData[bookId].chapters.push({\n  chapter_number: chapterNumber,\n  content: chapterContent\n});\n\n$workflow.staticData = workflowData;\n\nreturn [{\n  json: {\n    chapter_number: chapterNumber,\n    chapter_content: chapterContent,\n    book_id: bookId,\n    total_chapters: workflowData[bookId].chapters.length\n  }\n}];"
+      },
+      "id": "store-chapter",
+      "name": "Store Chapter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_last_batch }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-all-chapters-done",
+      "name": "Check: All Chapters Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1650, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all stored chapters\nconst bookTitle = $input.item.json.book_title;\nconst bookId = bookTitle.replace(/\\s+/g, '_');\nconst workflowData = $workflow.staticData || {};\nconst chapters = workflowData[bookId].chapters;\n\n// Sort chapters by number\nchapters.sort((a, b) => a.chapter_number - b.chapter_number);\n\n// Create DOCX content\nlet docxContent = `# ${bookTitle}\\n\\n---\\n\\n## Table of Contents\\n\\n`;\n\nchapters.forEach(ch => {\n  docxContent += `Chapter ${ch.chapter_number}\\n`;\n});\n\ndocxContent += `\\n\\n---\\n\\n`;\n\nchapters.forEach(ch => {\n  docxContent += `# Chapter ${ch.chapter_number}\\n\\n${ch.content}\\n\\n---\\n\\n`;\n});\n\n// Clear stored data\ndelete workflowData[bookId];\n$workflow.staticData = workflowData;\n\nreturn [{\n  json: {\n    book_title: bookTitle,\n    book_content: docxContent,\n    chapter_count: chapters.length\n  }\n}];"
+      },
+      "id": "compile-book",
+      "name": "Compile Book",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "F{{ $json.row_number }}",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "dataProperty": "complete"
+      },
+      "id": "update-status-complete",
+      "name": "Update Status: Complete",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2050, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "{{ $env.SMTP_USER }}",
+        "toEmail": "{{ $env.SMTP_USER }}",
+        "subject": "🎉 Book Complete: {{ $json.book_title }}",
+        "emailType": "html",
+        "message": "=<h2>Your Book is Ready!</h2><p><strong>Title:</strong> {{ $json.book_title }}</p><p><strong>Chapters:</strong> {{ $json.chapter_count }}</p><p>The book has been successfully generated and is attached to this email.</p><p>You can also access it in your Google Sheet.</p>",
+        "attachments": "={{ $json.book_title }}.txt",
+        "options": {}
+      },
+      "id": "send-email-book-complete",
+      "name": "Send Email: Book Complete",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2250, 400],
+      "credentials": {
+        "smtp": {
+          "id": "2",
+          "name": "Gmail SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status_outline_notes }}",
+              "operation": "equals",
+              "value2": "yes"
+            },
+            {
+              "value1": "={{ $json.notes_on_outline_after }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check-needs-outline-regen",
+      "name": "Check: Needs Outline Regeneration?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 700]
+    },
+    {
+      "parameters": {
+        "authentication": "apiKey",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.3-70b-versatile"
+            },
+            {
+              "name": "messages",
+              "value": "={{ [{ \"role\": \"system\", \"content\": \"You are an expert book outline creator. Revise outlines based on feedback.\" }, { \"role\": \"user\", \"content\": \"Original Title: \" + $json.title + \"\\n\\nOriginal Outline:\\n\" + $json.outline + \"\\n\\nEditor Feedback:\\n\" + $json.notes_on_outline_after + \"\\n\\nPlease create an improved outline addressing this feedback.\" }] }}"
+            },
+            {
+              "name": "temperature",
+              "value": "0.7"
+            },
+            {
+              "name": "max_tokens",
+              "value": "8000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "regenerate-outline-groq",
+      "name": "Regenerate Outline (Groq)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [650, 700],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $env.GOOGLE_SHEET_ID }}",
+        "range": "C{{ $json.row_number }}:E{{ $json.row_number }}",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "dataProperty": "={{ [[  $json.outline, '', '' ]] }}"
+      },
+      "id": "update-outline-clear-status",
+      "name": "Update Outline & Clear Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [850, 700],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "1",
+          "name": "Google Sheets Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "apiKey",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY_2 }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.3-70b-versatile"
+            },
+            {
+              "name": "messages",
+              "value": "={{ $json.messages }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ $json.temperature }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $json.max_tokens }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "groq-api-key-2-fallback",
+      "name": "Groq API (Key 2 - Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [850, 850],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000,
+      "notes": "Fallback to second API key on rate limit"
+    },
+    {
+      "parameters": {
+        "authentication": "apiKey",
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY_3 }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.3-70b-versatile"
+            },
+            {
+              "name": "messages",
+              "value": "={{ $json.messages }}"
+            },
+            {
+              "name": "temperature",
+              "value": "={{ $json.temperature }}"
+            },
+            {
+              "name": "max_tokens",
+              "value": "={{ $json.max_tokens }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "groq-api-key-3-fallback",
+      "name": "Groq API (Key 3 - Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1050, 850],
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 30000,
+      "notes": "Final fallback to third API key"
+    }
+  ],
+  "connections": {
+    "Google Sheets Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check: Needs Outline?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check: Outline Approved?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check: Needs Outline Regeneration?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Needs Outline?": {
+      "main": [
+        [
+          {
+            "node": "Generate Outline (Groq)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Outline (Groq)": {
+      "main": [
+        [
+          {
+            "node": "Write Outline to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Outline to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Update Status: Outline Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Status: Outline Ready": {
+      "main": [
+        [
+          {
+            "node": "Send Email: Outline Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Outline Approved?": {
+      "main": [
+        [
+          {
+            "node": "Update Status: Chapters in Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Status: Chapters in Progress": {
+      "main": [
+        [
+          {
+            "node": "Parse Outline into Chapters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Outline into Chapters": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Chapters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Through Chapters": {
+      "main": [
+        [
+          {
+            "node": "Generate Chapter (Groq)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compile Book",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Chapter (Groq)": {
+      "main": [
+        [
+          {
+            "node": "Store Chapter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Chapter": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Chapters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Book": {
+      "main": [
+        [
+          {
+            "node": "Update Status: Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Status: Complete": {
+      "main": [
+        [
+          {
+            "node": "Send Email: Book Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Needs Outline Regeneration?": {
+      "main": [
+        [
+          {
+            "node": "Regenerate Outline (Groq)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regenerate Outline (Groq)": {
+      "main": [
+        [
+          {
+            "node": "Update Outline & Clear Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-03T21:54:42.000Z",
+  "versionId": "1"
+}
